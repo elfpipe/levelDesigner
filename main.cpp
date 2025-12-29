@@ -38,7 +38,7 @@ struct InteractionItem {
     bool isWall = false;
     // Transform tf;
     QRectF rect; // used if rect
-    bool triLeft = false;   // used if tri
+    // bool triLeft = false;   // used if tri
 };
 
 struct SpriteItem {
@@ -57,7 +57,7 @@ static qreal clamp(qreal v, qreal lo, qreal hi){ return std::max(lo, std::min(hi
 class LevelCanvas : public QWidget {
     Q_OBJECT
 public:
-    explicit LevelCanvas(QWidget* parent=nullptr) : QWidget(parent) {
+    explicit LevelCanvas(QWidget* parent, QJsonDocument &doc, QJsonObject &root) : QWidget(parent), m_doc(doc), m_root(root) {
         setMouseTracking(true);
         setFocusPolicy(Qt::StrongFocus);
         setAttribute(Qt::WA_OpaquePaintEvent);
@@ -104,6 +104,10 @@ public:
     Hit gizmoHit = Hit::None; QPointF gizmoStartScene; Transform startTf; QPointF startOffset; QSizeF startSize; QRectF startRect; // for rect/tri/sprite
     Qt::Corner scaleCorner = Qt::TopLeftCorner;
 
+    QJsonDocument &m_doc;
+    QJsonObject &m_root;
+    bool isNew = true;
+
     // API helpers
     void setEditMode(EditMode m){ edit=m; clearSelection(); update(); }
     void setDrawTool(DrawTool t){ tool=t; update(); }
@@ -128,41 +132,43 @@ public:
 
     // Save/Load JSON
     QJsonDocument toJson() const {
-        QJsonObject root;
-        QJsonArray interArr;
-        for (const auto& it : interactions){
-            QJsonObject o; o["id"]=it.id; o["shape"]=it.shapeKind; o["is_wall"]=it.isWall;
-            o["rect"]=rectToJson(it.rect);
-            interArr.push_back(o);
-        }
-        root["interaction"] = interArr;
-        QJsonArray sprArr;
-        for (const auto& s : sprites){
-            QJsonObject o; o["id"]=s.id; o["path"]=s.path; o["z"]=s.z; o["pos"]=pointToJson(s.tf.pos); o["rotation"]=s.tf.rotation; o["scaleX"]=s.tf.scaleX; o["scaleY"]=s.tf.scaleY;
-            sprArr.push_back(o);
-        }
-        root["graphics"]=sprArr;
-        root["world"] = rectToJson(world);
-        root["window"] = rectToJson(window);
-        return QJsonDocument(root);
+      if (isNew)
+        QJsonObject m_root = m_doc.object();
+      QJsonArray interArr;
+      for (const auto& it : interactions){
+          QJsonObject o; o["id"]=it.id; o["shape"]=it.shapeKind; o["is_wall"]=it.isWall;
+          o["rect"]=rectToJson(it.rect);
+          interArr.push_back(o);
+      }
+      m_root["interaction"] = interArr;
+      QJsonArray sprArr;
+      for (const auto& s : sprites){
+          QJsonObject o; o["id"]=s.id; o["path"]=s.path; o["z"]=s.z; o["pos"]=pointToJson(s.tf.pos); o["rotation"]=s.tf.rotation; o["scaleX"]=s.tf.scaleX; o["scaleY"]=s.tf.scaleY;
+          sprArr.push_back(o);
+      }
+      m_root["graphics"]=sprArr;
+      m_root["world"] = rectToJson(world);
+      m_root["window"] = rectToJson(window);
+      return QJsonDocument(m_root);
     }
 
     void fromJson(const QJsonDocument& doc){
-        interactions.clear(); sprites.clear(); clearSelection();
-        QJsonObject root = doc.object();
-        for (auto v : root.value("interaction").toArray()){
-            QJsonObject o=v.toObject(); InteractionItem it; it.id=o.value("id").toString(newId()); it.shapeKind=o.value("shape").toString("rect"); it.isWall=o.value("is_wall").toBool(false);
-            it.rect=jsonToRect(o.value("rect"));
-            interactions.push_back(it);
-        }
-        for (auto v : root.value("graphics").toArray()){
-            QJsonObject o=v.toObject(); SpriteItem s; s.id=o.value("id").toString(newId()); s.path=o.value("path").toString(); s.z=o.value("z").toDouble(0);
-            s.tf.pos=jsonToPoint(o.value("pos")); s.tf.rotation=o.value("rotation").toDouble(0); s.tf.scaleX=o.value("scaleX").toDouble(1.0); s.tf.scaleY=o.value("scaleY").toDouble(1.0);
-            s.img.load(s.path); if (!s.img.isNull()) sprites.push_back(s);
-        }
-        world = jsonToRect(root.value("world"));
-        window = jsonToRect(root.value("window"));
-        update();
+      isNew = false;
+      interactions.clear(); sprites.clear(); clearSelection();
+      /*QJsonObject*/ m_root = doc.object();
+      for (auto v : m_root.value("interaction").toArray()){
+          QJsonObject o=v.toObject(); InteractionItem it; it.id=o.value("id").toString(newId()); it.shapeKind=o.value("shape").toString("rect"); it.isWall=o.value("is_wall").toBool(false);
+          it.rect=jsonToRect(o.value("rect"));
+          interactions.push_back(it);
+      }
+      for (auto v : m_root.value("graphics").toArray()){
+          QJsonObject o=v.toObject(); SpriteItem s; s.id=o.value("id").toString(newId()); s.path=o.value("path").toString(); s.z=o.value("z").toDouble(0);
+          s.tf.pos=jsonToPoint(o.value("pos")); s.tf.rotation=o.value("rotation").toDouble(0); s.tf.scaleX=o.value("scaleX").toDouble(1.0); s.tf.scaleY=o.value("scaleY").toDouble(1.0);
+          s.img.load(s.path); if (!s.img.isNull()) sprites.push_back(s);
+      }
+      world = jsonToRect(m_root.value("world"));
+      window = jsonToRect(m_root.value("window"));
+      update();
     }
 
 protected:
@@ -371,8 +377,8 @@ private:
         p.save();
         if (it.shapeKind=="rect") {
             p.setBrush(fill); p.drawRect(toScreen(it.rect));
-        } else {
-            QPainterPath path; QPolygonF tri = triLocal(toScreen(it.rect), it.triLeft);
+        } else if (it.shapeKind=="tri_right" || it.shapeKind=="tri_left") {
+            QPainterPath path; QPolygonF tri = triLocal(toScreen(it.rect), it.shapeKind=="tri_left");
             p.setBrush(fill); p.drawPolygon(tri);
         }
         p.restore();
@@ -448,7 +454,7 @@ private:
     void createShapeFromRect(const QRectF& r){
         InteractionItem it; it.id=newId(); it.isWall=wallMode; it.rect =r;
         if (tool==DrawTool::Rect){ it.shapeKind="rect"; }
-        else { it.shapeKind=(tool==DrawTool::TriLeft?"tri_left":"tri_right"); it.triLeft=(tool==DrawTool::TriLeft); }
+        else { it.shapeKind=(tool==DrawTool::TriLeft?"tri_left":"tri_right"); }
         interactions.push_back(it); selection = it.id; update();
     }
 
@@ -480,7 +486,7 @@ private:
 
     bool containsInteraction(const InteractionItem& it, const QPointF& scenePos){
         if (it.shapeKind=="rect") return it.rect.contains(scenePos);
-        else return QPolygonF(triLocal(it.rect, it.triLeft)).containsPoint(scenePos, Qt::OddEvenFill);
+        else return QPolygonF(triLocal(it.rect, it.shapeKind=="tri_left")).containsPoint(scenePos, Qt::OddEvenFill);
     }
 
     void captureStartForActive(){
@@ -590,7 +596,7 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     MainWindow(){
-        canvas = new LevelCanvas(); setCentralWidget(canvas); resize(1280,800);
+        canvas = new LevelCanvas(nullptr, m_doc, m_root); setCentralWidget(canvas); resize(1280,800);
         setWindowTitle("pellsBawl Level Designer — Manual Paint Qt6");
         createUi();
         statusBar()->showMessage("Ctrl+Wheel zoom | Ctrl+Drag pan | F2 Shapes / F3 Graphics | 1/2/3 tools | M/R/S gizmo");
@@ -599,7 +605,7 @@ public:
 private slots:
     void onImport(){ QString p = QFileDialog::getOpenFileName(this, "Import image", {}, "Images (*.png *.jpg *.jpeg *.bmp *.gif)"); if (!p.isEmpty()) canvas->importSprite(p); }
     void onSave(){ QString p = QFileDialog::getSaveFileName(this, "Save level", {}, "Level (*.json)"); if (p.isEmpty()) return; QFile f(p); if (f.open(QIODevice::WriteOnly)) { f.write(canvas->toJson().toJson(QJsonDocument::Indented)); f.close(); } }
-    void onLoad(){ QString p = QFileDialog::getOpenFileName(this, "Load level", {}, "Level (*.json)"); if (p.isEmpty()) return; QFile f(p); if (!f.open(QIODevice::ReadOnly)) return; QJsonDocument d = QJsonDocument::fromJson(f.readAll()); f.close(); canvas->fromJson(d); }
+    void onLoad(){ QString p = QFileDialog::getOpenFileName(this, "Load level", {}, "Level (*.json)"); if (p.isEmpty()) return; QFile f(p); if (!f.open(QIODevice::ReadOnly)) return; /*QJsonDocument d*/ m_doc = QJsonDocument::fromJson(f.readAll()); f.close(); canvas->fromJson(m_doc); }
 
     void setModeDraw(){ canvas->setEditMode(EditMode::Draw); }
     void setModeSelect(){ canvas->setEditMode(EditMode::Select); }
@@ -622,7 +628,7 @@ private slots:
 private:
     void createUi(){
         auto *tb = addToolBar("Tools"); tb->setMovable(false);
-        auto *aNew = tb->addAction("New"); connect(aNew, &QAction::triggered, this, [this]{ canvas->interactions.clear(); canvas->sprites.clear(); canvas->update(); });
+        auto *aNew = tb->addAction("New"); connect(aNew, &QAction::triggered, this, [this]{ m_doc = QJsonDocument(); m_root = m_doc.object(); canvas->interactions.clear(); canvas->sprites.clear(); canvas->update(); });
         auto *aLoad = tb->addAction("Load"); connect(aLoad, &QAction::triggered, this, &MainWindow::onLoad);
         auto *aSave = tb->addAction("Save"); connect(aSave, &QAction::triggered, this, &MainWindow::onSave);
         tb->addSeparator();
@@ -681,6 +687,10 @@ private:
     }
 
     LevelCanvas* canvas=nullptr;
+
+  private:
+    QJsonDocument m_doc;
+    QJsonObject m_root;
 };
 
 int main(int argc, char** argv){ QApplication app(argc, argv); MainWindow w; w.show(); return app.exec(); }
