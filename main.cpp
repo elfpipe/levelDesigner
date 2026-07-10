@@ -21,7 +21,7 @@
 // ---------- Data Model ----------
 
 enum class EditMode { Draw, Select, World, Window };
-enum class DrawTool { Rect, TriLeft, TriRight, Image};
+enum class DrawTool { Rect, TriLeft, TriRight, Image, Area}; //Areas are things like portals, end-level-doors and events/animations
 enum class GizmoMode { Move, Rotate, Scale };
 
 typedef QString Id;
@@ -49,6 +49,12 @@ struct SpriteItem {
     qreal z = 0;    // for future sorting
 };
 
+struct AreaItem {
+    Id id;
+    QRectF rect;
+    QString title;
+};
+
 // ---------- Utility ----------
 static Id newId() { return QUuid::createUuid().toString(QUuid::WithoutBraces); }
 static qreal clamp(qreal v, qreal lo, qreal hi){ return std::max(lo, std::min(hi, v)); }
@@ -67,6 +73,7 @@ public:
     // Scene data
     QList<InteractionItem> interactions;
     QList<SpriteItem> sprites;
+    QList<AreaItem> areas;
 
     QString spritePath;
     QImage spriteImage;
@@ -87,6 +94,7 @@ public:
     // Layer visibility
     bool showInteraction = true;
     bool showGraphics = true;
+    bool showAreas = true;
     bool wallMode = false; // flag for new shapes
 
     // Selection
@@ -117,6 +125,7 @@ public:
     // Visibility
     void setInteractionVisible(bool v){ showInteraction=v; update(); }
     void setGraphicsVisible(bool v){ showGraphics=v; update(); }
+    void setAreasVisible(bool v){ showAreas=v; update(); }
     void setWallMode(bool v){ wallMode=v; }
 
     // Import sprite
@@ -127,7 +136,7 @@ public:
             spritePath = d.absoluteFilePath(jsonPath) + QStringLiteral("/") + f.fileName();
         } else
             spritePath = path;
-        qDebug() << "SpritePath: " << spritePath;
+        // qDebug() << "SpritePath: " << spritePath;
         spriteImage = QImage(path);
     }
 
@@ -141,6 +150,13 @@ public:
     QJsonDocument toJson() const {
       if (isNew)
         QJsonObject m_root = m_doc.object();
+      QJsonArray areaArr;
+      for (const auto& ar : areas){
+          QJsonObject o; o["id"]=ar.id; o["title"]=ar.title;
+          o["rect"]=rectToJson(ar.rect);
+          areaArr.push_back(o);
+      }
+      m_root["areas"] = areaArr;
       QJsonArray interArr;
       for (const auto& it : interactions){
           QJsonObject o; o["id"]=it.id; o["shape"]=it.shapeKind; o["is_wall"]=it.isWall;
@@ -176,6 +192,11 @@ public:
         isNew = false;
         interactions.clear(); sprites.clear(); clearSelection();
         /*QJsonObject*/ m_root = doc.object();
+        for (auto v : m_root.value("areas").toArray()){
+            QJsonObject o=v.toObject(); AreaItem ar; ar.id=o.value("id").toString(newId()); ar.title=o.value("title").toString("-");
+            ar.rect=jsonToRect(o.value("rect"));
+            areas.push_back(ar);
+        }
         for (auto v : m_root.value("interaction").toArray()){
             QJsonObject o=v.toObject(); InteractionItem it; it.id=o.value("id").toString(newId()); it.shapeKind=o.value("shape").toString("rect"); it.isWall=o.value("is_wall").toBool(false);
             it.rect=jsonToRect(o.value("rect"));
@@ -186,11 +207,11 @@ public:
             s.tf.pos=jsonToPoint(o.value("pos")); s.tf.rotation=o.value("rotation").toDouble(0); s.tf.scaleX=o.value("scaleX").toDouble(1.0); s.tf.scaleY=o.value("scaleY").toDouble(1.0);
             if(!QFile::exists(s.path)) {
                 s.path = extractPath(jsonPath) + QStringLiteral("/") + extractFilename(s.path);
-                qDebug() << "path: " << s.path;
+                // qDebug() << "path: " << s.path;
             }
             auto e = s.img.load(s.path);
             if (!s.img.isNull()) sprites.push_back(s);
-            else qDebug() << "Failed to load img" << e;
+            // else qDebug() << "Failed to load img" << e;
         }
         world = jsonToRect(m_root.value("world"));
         window = jsonToRect(m_root.value("window"));
@@ -223,9 +244,12 @@ protected:
         if (showInteraction) {
             p.setOpacity(interAlpha);
             for (const auto& it : interactions) drawInteraction(p, it);
-            p.setOpacity(1.0);
         }
-
+        if (showAreas) {
+            p.setOpacity(0.4);
+            for (const auto &ar : areas) drawArea(p, ar);
+        }
+        p.setOpacity(1.0);
         // selection + gizmo overlay
         // if (selection.has_value()) drawGizmo(p);
 
@@ -258,11 +282,11 @@ protected:
         QPointF scenePos = fromScreen(e->pos());
         if (e->button()==Qt::LeftButton) {
             if(edit == EditMode::Select) {
-                qDebug() << "seect";
+                // qDebug() << "seect";
                 // selection + gizmo hit test
                 auto [hit, id] = pickAt(scenePos);
                 if (!id.isEmpty()) {
-                    qDebug() << "select()";
+                    // qDebug() << "select()";
                     selection = id;
                     gizmoHit = hit; gizmoStartScene = scenePos; captureStartForActive();
                     update(); return;
@@ -337,6 +361,7 @@ protected:
                         case DrawTool::Rect:
                         case DrawTool::TriLeft:
                         case DrawTool::TriRight:
+                        case DrawTool::Area:
                             createShapeFromRect(r); break;
                         }
                     case EditMode::Select:  break;
@@ -418,7 +443,19 @@ private:
         QRectF r = QRectF(-s.img.width()/2.0, -s.img.height()/2.0, s.img.width(), s.img.height());
         p.drawImage(r.topLeft(), s.img); // image not auto-scaled; transform applies scale
         p.restore();
+
         if (selection==s.id) drawSelectionBounds(p, s.tf, r);
+    }
+
+    void drawArea(QPainter& p, const AreaItem& ar){
+        p.save();
+        QPen pen(QColor(255,0,0)); pen.setWidthF(1.5/zoom); p.setPen(pen);
+        QColor fill = QColor(200,0,0);
+        fill.setAlphaF(0.85);
+        p.setBrush(fill); p.drawRect(toScreen(ar.rect));
+
+        if (selection==ar.id) drawSelectionBounds(p, Transform(), ar.rect);
+        p.restore();
     }
 
     void drawSelectionBounds(QPainter& p, const Transform& tf, const QRectF& localBounds){
@@ -478,6 +515,7 @@ private:
 
     // ---- Creation ----
     void createShapeFromRect(const QRectF& r){
+        if(tool==DrawTool::Area) { AreaItem ar; ar.id=newId(); ar.rect = r; ar.title = QInputDialog::getText(this, "Input", "Area Title:"); areas.push_back(ar); return; }
         InteractionItem it; it.id=newId(); it.isWall=wallMode; it.rect =r;
         if (tool==DrawTool::Rect){ it.shapeKind="rect"; }
         else { it.shapeKind=(tool==DrawTool::TriLeft?"tri_left":"tri_right"); }
@@ -642,6 +680,7 @@ private slots:
     void setToolTriLeft(){canvas->setDrawTool(DrawTool::TriLeft);}
     void setToolTriRight(){canvas->setDrawTool(DrawTool::TriRight);}
     void setToolImage(){canvas->setDrawTool(DrawTool::Image);}
+    void setToolArea(){canvas->setDrawTool(DrawTool::Area);}
 
     void setGizmoMove(){ canvas->setGizmoMode(GizmoMode::Move); }
     void setGizmoRotate(){ canvas->setGizmoMode(GizmoMode::Rotate); }
@@ -649,6 +688,7 @@ private slots:
 
     void togInteraction(bool v){ canvas->setInteractionVisible(v); }
     void togGraphics(bool v){ canvas->setGraphicsVisible(v); }
+    void togAreas(bool v) { canvas->setAreasVisible(v); }
     void togWall(bool v){ canvas->setWallMode(v); }
 
 private:
@@ -660,9 +700,12 @@ private:
         tb->addSeparator();
         auto *aImport = tb->addAction("Import Img"); connect(aImport, &QAction::triggered, this, &MainWindow::onImport);
         tb->addSeparator();
+
         // layer toggles
         auto *aShapes = tb->addAction("Shapes (0)"); aShapes->setCheckable(true); aShapes->setChecked(true); connect(aShapes, &QAction::toggled, this, &MainWindow::togInteraction);
         auto *aImages = tb->addAction("Images (9)"); aImages->setCheckable(true); aImages->setChecked(true); connect(aImages, &QAction::toggled, this, &MainWindow::togGraphics);
+        auto *aAreas = tb->addAction("Areas (-)"); aAreas->setCheckable(true); aAreas->setChecked(true); connect(aAreas, &QAction::toggled, this, &MainWindow::togAreas);
+
         QActionGroup vGr(this); vGr.addAction(aShapes); vGr.addAction(aImages);
         tb->addSeparator();
         // wall flag
@@ -675,12 +718,15 @@ private:
         auto *mWindow = tb->addAction("Window Rect [F4]"); connect(mWindow, &QAction::triggered, this, &MainWindow::setModeWindow); mWindow->setCheckable(true);
         auto *mGr = new QActionGroup(this); mGr->setExclusive(true); mGr->addAction(mDraw); mGr->addAction(mSelect);mGr->addAction(mWorld);mGr->addAction(mWindow);
         tb->addSeparator();
+
         // shape tools
         auto *tRect = tb->addAction("Rect [1]"); connect(tRect, &QAction::triggered, this, &MainWindow::setToolRect); tRect->setCheckable(true); tRect->toggle();
         auto *tTriL = tb->addAction("TriL [2]"); connect(tTriL, &QAction::triggered, this, &MainWindow::setToolTriLeft); tTriL->setCheckable(true);
         auto *tTriR = tb->addAction("TriR [3]"); connect(tTriR, &QAction::triggered, this, &MainWindow::setToolTriRight); tTriR->setCheckable(true);
         auto *tImage = tb->addAction("Image [4]"); connect(tImage, &QAction::triggered, this, &MainWindow::setToolImage); tImage->setCheckable(true);
-        auto *tGr = new QActionGroup(this); tGr->setExclusive(true); tGr->addAction(tRect); tGr->addAction(tTriL);tGr->addAction(tTriR);tGr->addAction(tImage);
+        auto *tArea = tb->addAction("Area [5]"); connect(tArea, &QAction::triggered, this, &MainWindow::setToolArea); tArea->setCheckable(true);
+
+        auto *tGr = new QActionGroup(this); tGr->setExclusive(true); tGr->addAction(tRect); tGr->addAction(tTriL);tGr->addAction(tTriR);tGr->addAction(tImage);tGr->addAction(tArea);
         tb->addSeparator();
         // gizmo
         auto *gGr = new QActionGroup(this); gGr->setExclusive(true);
