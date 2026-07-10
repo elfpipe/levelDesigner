@@ -70,6 +70,7 @@ public:
 
     QString spritePath;
     QImage spriteImage;
+    QString jsonPath;
 
     // View state
     qreal zoom = 1.0;        // pixels per scene unit
@@ -120,7 +121,13 @@ public:
 
     // Import sprite
     void importSprite(const QString& path){
-        spritePath = path;
+        if(!QFile::exists(path)) {
+            QDir d(jsonPath);
+            QFile f(path);
+            spritePath = d.absoluteFilePath(jsonPath) + QStringLiteral("/") + f.fileName();
+        } else
+            spritePath = path;
+        qDebug() << "SpritePath: " << spritePath;
         spriteImage = QImage(path);
     }
 
@@ -152,23 +159,42 @@ public:
       return QJsonDocument(m_root);
     }
 
+    QString extractFilename(QString filename) {
+        if(filename.contains('/'))
+            return filename.last(filename.size() - filename.lastIndexOf('/') - 1);
+        else
+            return filename;
+    }
+
+    QString extractPath(QString filename) {
+        if(filename.contains('/'))
+            return filename.first(filename.lastIndexOf('/'));
+        else return filename;
+    }
+
     void fromJson(const QJsonDocument& doc){
-      isNew = false;
-      interactions.clear(); sprites.clear(); clearSelection();
-      /*QJsonObject*/ m_root = doc.object();
-      for (auto v : m_root.value("interaction").toArray()){
-          QJsonObject o=v.toObject(); InteractionItem it; it.id=o.value("id").toString(newId()); it.shapeKind=o.value("shape").toString("rect"); it.isWall=o.value("is_wall").toBool(false);
-          it.rect=jsonToRect(o.value("rect"));
-          interactions.push_back(it);
-      }
-      for (auto v : m_root.value("graphics").toArray()){
-          QJsonObject o=v.toObject(); SpriteItem s; s.id=o.value("id").toString(newId()); s.path=o.value("path").toString(); s.z=o.value("z").toDouble(0);
-          s.tf.pos=jsonToPoint(o.value("pos")); s.tf.rotation=o.value("rotation").toDouble(0); s.tf.scaleX=o.value("scaleX").toDouble(1.0); s.tf.scaleY=o.value("scaleY").toDouble(1.0);
-          s.img.load(s.path); if (!s.img.isNull()) sprites.push_back(s);
-      }
-      world = jsonToRect(m_root.value("world"));
-      window = jsonToRect(m_root.value("window"));
-      update();
+        isNew = false;
+        interactions.clear(); sprites.clear(); clearSelection();
+        /*QJsonObject*/ m_root = doc.object();
+        for (auto v : m_root.value("interaction").toArray()){
+            QJsonObject o=v.toObject(); InteractionItem it; it.id=o.value("id").toString(newId()); it.shapeKind=o.value("shape").toString("rect"); it.isWall=o.value("is_wall").toBool(false);
+            it.rect=jsonToRect(o.value("rect"));
+            interactions.push_back(it);
+        }
+        for (auto v : m_root.value("graphics").toArray()){
+            QJsonObject o=v.toObject(); SpriteItem s; s.id=o.value("id").toString(newId()); s.path=o.value("path").toString(); s.z=o.value("z").toDouble(0);
+            s.tf.pos=jsonToPoint(o.value("pos")); s.tf.rotation=o.value("rotation").toDouble(0); s.tf.scaleX=o.value("scaleX").toDouble(1.0); s.tf.scaleY=o.value("scaleY").toDouble(1.0);
+            if(!QFile::exists(s.path)) {
+                s.path = extractPath(jsonPath) + QStringLiteral("/") + extractFilename(s.path);
+                qDebug() << "path: " << s.path;
+            }
+            auto e = s.img.load(s.path);
+            if (!s.img.isNull()) sprites.push_back(s);
+            else qDebug() << "Failed to load img" << e;
+        }
+        world = jsonToRect(m_root.value("world"));
+        window = jsonToRect(m_root.value("window"));
+        update();
     }
 
 protected:
@@ -604,8 +630,8 @@ public:
 
 private slots:
     void onImport(){ QString p = QFileDialog::getOpenFileName(this, "Import image", {}, "Images (*.png *.jpg *.jpeg *.bmp *.gif)"); if (!p.isEmpty()) canvas->importSprite(p); }
-    void onSave(){ QString p = QFileDialog::getSaveFileName(this, "Save level", {}, "Level (*.json)"); if (p.isEmpty()) return; QFile f(p); if (f.open(QIODevice::WriteOnly)) { f.write(canvas->toJson().toJson(QJsonDocument::Indented)); f.close(); } }
-    void onLoad(){ QString p = QFileDialog::getOpenFileName(this, "Load level", {}, "Level (*.json)"); if (p.isEmpty()) return; QFile f(p); if (!f.open(QIODevice::ReadOnly)) return; /*QJsonDocument d*/ m_doc = QJsonDocument::fromJson(f.readAll()); f.close(); canvas->fromJson(m_doc); }
+    void onSave(){ QString p = QFileDialog::getSaveFileName(this, "Save level", {}, "Level (*.json)"); if (p.isEmpty()) return; QFile f(p); if (f.open(QIODevice::WriteOnly)) { canvas->jsonPath = p; f.write(canvas->toJson().toJson(QJsonDocument::Indented)); f.close(); } }
+    void onLoad(){ QString p = QFileDialog::getOpenFileName(this, "Load level", {}, "Level (*.json)"); if (p.isEmpty()) return; QFile f(p); if (!f.open(QIODevice::ReadOnly)) return; canvas->jsonPath = p; /*QJsonDocument d*/ m_doc = QJsonDocument::fromJson(f.readAll()); f.close(); canvas->fromJson(m_doc); }
 
     void setModeDraw(){ canvas->setEditMode(EditMode::Draw); }
     void setModeSelect(){ canvas->setEditMode(EditMode::Select); }
